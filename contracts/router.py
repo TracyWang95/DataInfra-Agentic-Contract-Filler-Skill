@@ -3,6 +3,7 @@
 Contract type router - automatically detect which contract type user wants.
 """
 
+import re
 from typing import Optional
 
 # Supported contract types with metadata
@@ -58,34 +59,110 @@ CONTRACT_TYPES = {
 }
 
 
-def detect_contract_type(user_input: str) -> Optional[str]:
+def _normalize_text(text: str) -> str:
+    """Normalize user text for robust keyword matching."""
+    if not text:
+        return ""
+    text = text.lower().strip()
+    # Remove most punctuation/whitespace to handle variants like "数据-委托 处理"
+    return re.sub(r"[\s\-_，。！？、；：,.!?;:()（）【】\[\]\"'“”‘’]+", "", text)
+
+
+def _extract_code_variants(text: str) -> set[str]:
+    """Extract normalized code variants from text, e.g. GF-2025-2616 -> gf20252616."""
+    if not text:
+        return set()
+    raw = text.lower()
+    compact = re.sub(r"[^a-z0-9]+", "", raw)
+    return {raw, compact}
+
+
+def detect_contract_type_detailed(user_input: str) -> dict:
     """
-    Detect contract type from user input using keyword matching.
+    Detect contract type from user input using weighted matching.
     
     Args:
         user_input: Natural language description of user's intent
         
     Returns:
-        Contract type key (e.g., "tigong", "weituo") or None if not detected
+        {
+            "type": Optional[str],
+            "scores": dict[str, int],
+            "ambiguous": bool,
+        }
     """
-    user_input_lower = user_input.lower()
+    raw = user_input or ""
+    normalized = _normalize_text(raw)
     
     # Score each type based on keyword matches
     scores = {}
+    exact_hit = False
+    raw_code_variants = _extract_code_variants(raw)
     for type_key, info in CONTRACT_TYPES.items():
         score = 0
+        # Strong boost for exact contract name/code mention
+        if info["name"] in raw or _normalize_text(info["name"]) in normalized:
+            score += 100
+            exact_hit = True
+        code_variants = _extract_code_variants(info["code"])
+        if raw_code_variants.intersection(code_variants):
+            score += 120
+            exact_hit = True
+        if type_key in raw.lower():
+            score += 80
+            exact_hit = True
+
         for kw in info["keywords"]:
-            if kw in user_input_lower or kw in user_input:
-                # Longer keywords get higher scores
-                score += len(kw)
+            kw_norm = _normalize_text(kw)
+            if kw in raw or (kw_norm and kw_norm in normalized):
+                # Longer keywords are usually more specific
+                score += max(4, len(kw_norm))
         if score > 0:
             scores[type_key] = score
-    
+
     if not scores:
-        return None
+        return {"type": None, "scores": {}, "ambiguous": False, "source": "rule"}
+
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    best_type, best_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else -1
+
+    # Ambiguous if top two are too close and no strong exact hit.
+    ambiguous = len(ranked) > 1 and (best_score - second_score) <= 3 and not exact_hit
+
+    detected = None if ambiguous else best_type
+    return {"type": detected, "scores": scores, "ambiguous": ambiguous, "source": "rule"}
+
+
+def get_semantic_routing_prompt(user_input: str, top_k: int = 3) -> str:
+    """
+    Generate a structured prompt for the Skill's built-in model to do semantic routing.
+    This does NOT call any external API; caller can feed this prompt to current model.
+    """
+    detail = detect_contract_type_detailed(user_input)
+    ranked = sorted(detail.get("scores", {}).items(), key=lambda kv: kv[1], reverse=True)
+    candidates = ranked[:top_k] if ranked else list(CONTRACT_TYPES.items())[:top_k]
+    lines = [
+        "请基于用户意图进行语义路由，返回合同类型编码（tigong/weituo/ronghe/zhongjie）之一。",
+        "要求：优先选择语义最匹配的合同类型；若信息不足，先追问用户场景再决定。",
+        "",
+        f"用户输入：{user_input}",
+        "",
+        "候选类型：",
+    ]
+    for item in candidates:
+        key = item[0]
+        info = CONTRACT_TYPES[key]
+        score = detail.get("scores", {}).get(key, 0)
+        lines.append(f"- {key}: {info['name']}（{info['code']}），规则分={score}，说明：{info['description']}")
+    lines.append("")
+    lines.append("输出格式：仅输出编码（例如 weituo）。")
+    return "\n".join(lines)
+
     
-    # Return highest scoring type
-    return max(scores.keys(), key=lambda k: scores[k])
+def detect_contract_type(user_input: str) -> Optional[str]:
+    """Backward-compatible contract type detection API."""
+    return detect_contract_type_detailed(user_input).get("type")
 
 
 def get_contract_info(type_key: str) -> dict:
@@ -114,16 +191,22 @@ def get_disambiguation_prompt() -> str:
 
 
 if __name__ == "__main__":
-    # Test
+    import sys
+    if sys.platform == "win32":
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     test_inputs = [
         "帮我填一个数据提供合同",
+        "GF-2025-2616",
         "我要把数据委托给别人处理",
         "多方一起开发数据产品，需要签融合合同",
         "我是数据交易平台，帮别人撮合交易",
-        "我要签合同",  # Should return None
+        "我要签合同",
     ]
     for inp in test_inputs:
-        result = detect_contract_type(inp)
+        detail = detect_contract_type_detailed(inp)
+        t = detail["type"]
+        name = CONTRACT_TYPES[t]["name"] if t else "Unknown"
         print(f"Input: {inp}")
-        print(f"  -> Type: {result} ({CONTRACT_TYPES[result]['name'] if result else 'Unknown'})")
+        print(f"  -> {t} ({name})  scores={detail['scores']}  source={detail['source']}")
         print()

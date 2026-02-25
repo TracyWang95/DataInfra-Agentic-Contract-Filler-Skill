@@ -24,7 +24,13 @@ if sys.platform == "win32":
 SKILL_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(SKILL_DIR))
 
-from contracts.base_config import apply_aliases, get_progress, get_config, get_unfilled_fields
+from contracts.base_config import (
+    apply_aliases,
+    get_config,
+    get_unfilled_fields,
+    is_checkbox_checked,
+    is_field_filled,
+)
 
 
 # Style constants matching templates
@@ -56,10 +62,6 @@ def fill_docx_template(template_path: str, field_values: dict, output_path: str)
         remaining = set()
         count = 0
         
-        # 定义选中状态的有效值
-        CHECKED_VALUES = (True, "true", "True", "☑", "checked", "是", "选中", "yes", "Yes", "YES", "1")
-        UNCHECKED_VALUES = (False, "false", "False", "☐", "unchecked", "否", "不选", "no", "No", "NO", "0")
-        
         def replacer(m):
             nonlocal count
             key = m.group(1)
@@ -68,33 +70,21 @@ def fill_docx_template(template_path: str, field_values: dict, output_path: str)
             if key.startswith("☐"):
                 if key in values:
                     val = values[key]
-                    count += 1
-                    # 判断是否选中
-                    if val in CHECKED_VALUES:
-                        return "☑"
-                    elif val in UNCHECKED_VALUES:
-                        return "☐"
-                    elif val:  # 非空值视为选中
-                        return "☑"
-                    else:
-                        return "☐"
+                    if is_field_filled(key, values):
+                        count += 1
+                        return "☑" if is_checkbox_checked(val) else "☐"
+                    # Invalid checkbox value should be treated as unfilled
+                    remaining.add(key)
+                    return "☐"
                 else:
                     # 未填写的复选框
                     remaining.add(key)
                     return "☐"
             
             # 普通文本字段
-            elif key in values and values[key]:
-                val = values[key]
-                # 防止 True/False 被直接写入文本字段
-                if val is True:
-                    remaining.add(key)
-                    return ""
-                elif val is False:
-                    remaining.add(key)
-                    return ""
+            elif key in values and is_field_filled(key, values):
                 count += 1
-                return str(val)
+                return str(values[key]).strip()
             else:
                 remaining.add(key)
                 return ""  # clear unfilled placeholders
@@ -143,24 +133,12 @@ def fill_docx_template(template_path: str, field_values: dict, output_path: str)
     for para in doc.paragraphs:
         filled_count += process_paragraph(para, field_values)
     
-    # Process tables (including nested tables)
+    # Process tables (including nested tables) — same formatting logic as paragraphs
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for para in cell.paragraphs:
-                    full_text = para.text
-                    if '{{' not in full_text:
-                        continue
-                    new_text, remaining, count = replace_in_text(full_text, field_values)
-                    unfilled.update(remaining)
-                    filled_count += count
-                    if new_text != full_text:
-                        for run in para.runs:
-                            run.text = ""
-                        if para.runs:
-                            para.runs[0].text = new_text
-                        else:
-                            para.add_run(new_text)
+                    filled_count += process_paragraph(para, field_values)
     
     # Save
     output_file = Path(output_path)
@@ -213,7 +191,7 @@ def main():
     # Show progress
     contract_name = state.get("contract_name", "合同")
     total_fields = state.get("total_placeholders", 0)
-    filled_count = len([v for v in field_values.values() if v])
+    filled_count = sum(1 for f in state.get("all_placeholders", []) if is_field_filled(f, field_values))
     
     print(f"📋 合同类型：{contract_name}")
     print(f"   模板占位符总数：{total_fields}")

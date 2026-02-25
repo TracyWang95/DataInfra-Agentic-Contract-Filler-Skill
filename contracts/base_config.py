@@ -5,7 +5,7 @@ Base configuration and shared utilities for all contract types.
 
 from pathlib import Path
 import importlib
-from typing import Any
+from typing import Optional
 
 # Base directory for contract configs
 CONTRACTS_DIR = Path(__file__).parent
@@ -51,7 +51,7 @@ def get_all_fields(placeholder_groups: dict) -> list[str]:
     return fields
 
 
-def get_group_for_field(field_name: str, placeholder_groups: dict) -> str | None:
+def get_group_for_field(field_name: str, placeholder_groups: dict) -> Optional[str]:
     """Find which group a field belongs to."""
     for group_name, group_info in placeholder_groups.items():
         if field_name in group_info["fields"]:
@@ -63,9 +63,9 @@ def apply_aliases(field_values: dict, field_aliases: dict) -> dict:
     """Apply field aliases to auto-fill related fields."""
     updated = dict(field_values)
     for source, targets in field_aliases.items():
-        if source in updated and updated[source]:
+        if source in updated and is_field_filled(source, updated):
             for target in targets:
-                if target not in updated or not updated[target]:
+                if target not in updated or not is_field_filled(target, updated):
                     updated[target] = updated[source]
     return updated
 
@@ -74,12 +74,12 @@ def get_progress(field_values: dict, placeholder_groups: dict) -> dict:
     """Get fill progress statistics."""
     all_fields = get_all_fields(placeholder_groups)
     total = len(all_fields)
-    filled = sum(1 for f in all_fields if f in field_values and field_values[f])
+    filled = sum(1 for f in all_fields if is_field_filled(f, field_values))
     
     group_progress = {}
     for group_name, group_info in placeholder_groups.items():
         g_total = len(group_info["fields"])
-        g_filled = sum(1 for f in group_info["fields"] if f in field_values and field_values[f])
+        g_filled = sum(1 for f in group_info["fields"] if is_field_filled(f, field_values))
         group_progress[group_name] = {
             "filled": g_filled,
             "total": g_total,
@@ -94,7 +94,7 @@ def get_progress(field_values: dict, placeholder_groups: dict) -> dict:
     }
 
 
-def get_next_unfilled_group(field_values: dict, placeholder_groups: dict) -> str | None:
+def get_next_unfilled_group(field_values: dict, placeholder_groups: dict) -> Optional[str]:
     """Get the next priority group that has unfilled fields.
     
     所有字段都是必填的，没有可选字段。
@@ -138,12 +138,20 @@ def get_unfilled_fields(field_values: dict, placeholder_groups: dict, group_name
 # 复选框有效值常量
 CHECKBOX_CHECKED_VALUES = (True, "true", "True", "☑", "checked", "是", "选中", "yes", "Yes", "YES", "1")
 CHECKBOX_UNCHECKED_VALUES = (False, "false", "False", "☐", "unchecked", "否", "不选", "no", "No", "NO", "0")
-CHECKBOX_VALID_VALUES = CHECKBOX_CHECKED_VALUES + CHECKBOX_UNCHECKED_VALUES
 
 
 def is_checkbox_checked(val) -> bool:
     """判断复选框值是否表示"选中"状态"""
+    if isinstance(val, str):
+        val = val.strip()
     return val in CHECKBOX_CHECKED_VALUES
+
+
+def is_checkbox_filled(val) -> bool:
+    """复选框必须明确为选中或不选。"""
+    if isinstance(val, str):
+        val = val.strip()
+    return val in CHECKBOX_CHECKED_VALUES or val in CHECKBOX_UNCHECKED_VALUES
 
 
 def is_field_filled(field_name: str, field_values: dict) -> bool:
@@ -157,13 +165,7 @@ def is_field_filled(field_name: str, field_values: dict) -> bool:
     val = field_values[field_name]
     
     if field_name.startswith("☐"):
-        # 复选框：必须是有效的选中/不选值
-        if val in CHECKBOX_VALID_VALUES:
-            return True
-        # 非空字符串也算（会被视为选中）
-        if isinstance(val, str) and val.strip():
-            return True
-        return False
+        return is_checkbox_filled(val)
     else:
         # 文本字段：必须非空，且不能是布尔值
         if val is True or val is False:
@@ -188,8 +190,13 @@ def amount_to_chinese(amount_str: str) -> str:
         "500000" -> "伍拾万元整"
         "123456.78" -> "壹拾贰万叁仟肆佰伍拾陆元柒角捌分"
     """
+    if not amount_str or not isinstance(amount_str, str):
+        return str(amount_str) if amount_str else ""
+    
     # Clean input
     amount_str = amount_str.strip()
+    if not amount_str:
+        return ""
     amount_str = amount_str.replace(",", "").replace("，", "")
     amount_str = amount_str.replace("元", "").replace("整", "")
     

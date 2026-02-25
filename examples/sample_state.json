@@ -4,6 +4,11 @@
   "contract_code": "GF-2025-2615",
   "template_path": "contracts/tigong/template.docx",
   "total_placeholders": 189,
+  "checkbox_count": 30,
+  "text_count": 159,
+  "all_placeholders": [],
+  "groups": {},
+  "ungrouped": [],
   "field_values": {
     "合同编号": "2025-DATA-001",
     "签订年": "2025",

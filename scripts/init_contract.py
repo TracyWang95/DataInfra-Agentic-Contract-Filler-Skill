@@ -29,7 +29,13 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).parent.parent
 sys.path.insert(0, str(SKILL_DIR))
 
-from contracts.router import detect_contract_type, CONTRACT_TYPES, list_all_types
+from contracts.router import (
+    detect_contract_type_detailed,
+    CONTRACT_TYPES,
+    list_all_types,
+    get_disambiguation_prompt,
+    get_semantic_routing_prompt,
+)
 from contracts.base_config import get_config, get_progress, get_all_fields
 
 
@@ -81,6 +87,20 @@ def init_state(contract_type: str, state_path: str, template_path: str = None):
     
     # Build grouped view from config
     placeholder_groups = config["PLACEHOLDER_GROUPS"]
+    config_fields = set(get_all_fields(placeholder_groups))
+    placeholder_set = set(placeholders)
+
+    # Fail fast if template and config are inconsistent
+    only_in_template = sorted(placeholder_set - config_fields)
+    only_in_config = sorted(config_fields - placeholder_set)
+    if only_in_template or only_in_config:
+        print("ERROR: 模板占位符与配置字段不一致，请先修复：")
+        if only_in_template:
+            print(f"  仅在模板中存在（{len(only_in_template)}）：{only_in_template[:10]}")
+        if only_in_config:
+            print(f"  仅在配置中存在（{len(only_in_config)}）：{only_in_config[:10]}")
+        sys.exit(1)
+
     grouped = {}
     ungrouped = []
     
@@ -122,7 +142,6 @@ def init_state(contract_type: str, state_path: str, template_path: str = None):
         json.dump(state, f, ensure_ascii=False, indent=2)
     
     # Print summary
-    type_info = CONTRACT_TYPES[contract_type]
     print(f"✅ 合同初始化完成！")
     print(f"   合同类型：{config['CONTRACT_NAME']}（{config['CONTRACT_CODE']}）")
     print(f"   模板文件：{template_path}")
@@ -154,12 +173,27 @@ def main():
     # Determine contract type
     contract_type = args.type
     if not contract_type and args.intent:
-        contract_type = detect_contract_type(args.intent)
+        detection = detect_contract_type_detailed(args.intent)
+        contract_type = detection["type"]
         if contract_type:
             print(f"🔍 识别到合同类型：{CONTRACT_TYPES[contract_type]['name']}")
         else:
-            print("❌ 无法识别合同类型。请使用 --type 明确指定，或使用 --list 查看支持的类型。")
-            print(list_all_types())
+            if detection.get("ambiguous"):
+                print("❌ 合同类型识别结果存在歧义，请明确指定。")
+                ranked = sorted(detection.get("scores", {}).items(), key=lambda kv: kv[1], reverse=True)
+                if ranked:
+                    print("   候选结果：")
+                    for k, s in ranked[:3]:
+                        print(f"   - {CONTRACT_TYPES[k]['name']}（score={s}）")
+                print()
+                print(get_disambiguation_prompt())
+                print("\n【给 Skill 模型的语义路由提示】")
+                print(get_semantic_routing_prompt(args.intent))
+            else:
+                print("❌ 无法识别合同类型。请使用 --type 明确指定，或使用 --list 查看支持的类型。")
+                print(list_all_types())
+                print("\n【给 Skill 模型的语义路由提示】")
+                print(get_semantic_routing_prompt(args.intent))
             sys.exit(1)
     
     if not contract_type:

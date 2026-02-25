@@ -12,15 +12,19 @@ Supports 4 contract types from National Data Administration:
 from .router import (
     CONTRACT_TYPES,
     detect_contract_type,
+    detect_contract_type_detailed,
     get_contract_info,
     list_all_types,
     get_disambiguation_prompt,
+    get_semantic_routing_prompt,
 )
 
 __all__ = [
     "CONTRACT_TYPES",
     "detect_contract_type",
+    "detect_contract_type_detailed",
     "get_contract_info",
     "list_all_types",
     "get_disambiguation_prompt",
+    "get_semantic_routing_prompt",
 ]
